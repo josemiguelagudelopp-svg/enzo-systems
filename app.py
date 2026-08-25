@@ -138,7 +138,6 @@ HTML_TEMPLATE = """
             if (mesaId) {
                 renderVistaCliente();
             } else {
-                // Verificar si hay sesión activa en el servidor
                 const res = await fetch('/api/check-session');
                 const sesion = await res.json();
                 
@@ -715,7 +714,6 @@ HTML_TEMPLATE = """
             ws.send(JSON.stringify({ type: tipo, sender: `mesa_${mesaId}`, table: mesaId, message: desc, timestamp: new Date().toLocaleTimeString() }));
         }
 
-        // Ejecutar aplicación al cargar
         iniciarApp();
     </script>
 </body>
@@ -749,8 +747,6 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
-
-# --- ENDPOINTS DE AUTENTICACIÓN Y SESIÓN ---
 
 @app.post("/api/register")
 async def register(data: dict):
@@ -789,7 +785,6 @@ async def login(data: dict, response: Response):
 
     if user:
         rol = user[0]
-        # Establecer cookies de sesión simples
         response.set_cookie(key="session_user", value=username, httponly=True)
         response.set_cookie(key="session_rol", value=rol, httponly=True)
         return {"success": True, "rol": rol}
@@ -806,8 +801,6 @@ async def check_session(session_user: str = Cookie(default=None), session_rol: s
     if session_user and session_rol:
         return {"logged": True, "username": session_user, "rol": session_rol}
     return {"logged": False}
-
-# --- ENDPOINTS GENERALES Y DE NEGOCIO ---
 
 @app.get("/", response_class=HTMLResponse)
 async def get(request: Request):
