@@ -138,7 +138,6 @@ HTML_TEMPLATE = """
             if (mesaId) {
                 renderVistaCliente();
             } else {
-                // Verificar si hay sesión activa en el servidor
                 const res = await fetch('/api/check-session');
                 const sesion = await res.json();
                 
@@ -225,9 +224,9 @@ HTML_TEMPLATE = """
                         <h2 id="totalMesaCliente" style="margin: 5px 0 0 0; color: #27ae60;">$0</h2>
                     </div>
                     <p>¿Qué necesitas de nuestro equipo?</p>
-                    <button class="btn-waiter" onclick="enviarAccion('CALL_WAITER', 'Llamar al camarero', 0)">🙋‍♂️ Llamar Camarero</button>
-                    <button class="btn-bill" onclick="enviarAccion('ASK_BILL', 'Pedir la cuenta', 0)">💵 Pedir la Cuenta</button>
-                    <button class="btn-clean" onclick="enviarAccion('CLEAN_TABLE', 'Solicitar limpieza', 0)">🧹 Limpiar Mesa</button>
+                    <button class="btn-waiter" onclick="enviarAccionWS('CALL_WAITER', 'Llamar al camarero')">🙋‍♂️ Llamar Camarero</button>
+                    <button class="btn-bill" onclick="enviarAccionWS('ASK_BILL', 'Pedir la cuenta')">💵 Pedir la Cuenta</button>
+                    <button class="btn-clean" onclick="enviarAccionWS('CLEAN_TABLE', 'Solicitar limpieza')">🧹 Limpiar Mesa</button>
                     
                     <div style="margin-top: 25px; text-align: left;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -469,18 +468,16 @@ HTML_TEMPLATE = """
                 if(editIdInput) editIdInput.value = "";
                 if(btnAccion) btnAccion.innerText = "➕ Añadir";
 
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    const wsPayload = {
-                        type: 'ADD_ORDER',
-                        sender: 'camarero',
-                        table: mesa,
-                        message: editId ? `Ítem modificado: ${cantidadItem}x ${nombreItem}` : `Pedido añadido: ${cantidadItem}x ${nombreItem}`,
-                        precio: precioItem * cantidadItem,
-                        timestamp: new Date().toLocaleTimeString()
-                    };
-                    ws.send(JSON.stringify(wsPayload));
-                }
                 cargarDatosCamarero();
+
+                // Notificar en tiempo real vía WebSocket
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'SYNC_UPDATE',
+                        table: mesa,
+                        message: editId ? `Ítem modificado: ${cantidadItem}x ${nombreItem}` : `Nuevo pedido: ${cantidadItem}x ${nombreItem}`
+                    }));
+                }
             }
         }
 
@@ -504,19 +501,27 @@ HTML_TEMPLATE = """
             if (btnAccion) btnAccion.innerText = "💾 Guardar";
         }
 
-        async function eliminarItemComanda(idItem) {
+        async function eliminarItemComanda(idItem, mesa) {
             if (!confirm("¿Eliminar producto?")) return;
             await fetch(`/api/eliminar-item-comanda?id=${idItem}`, { method: 'DELETE' });
             cargarDatosCamarero();
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'SYNC_UPDATE', table: mesa, message: "Ítem eliminado de comanda" }));
+            }
         }
 
-        async function actualizarEstadoEntrega(idItem, estadoCheck) {
+        async function actualizarEstadoEntrega(idItem, estadoCheck, mesa) {
             await fetch('/api/actualizar-entrega', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ id: idItem, entregado: estadoCheck ? 1 : 0 })
             });
             cargarDatosCamarero();
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'SYNC_UPDATE', table: mesa, message: "Actualización en entrega de ítems" }));
+            }
         }
 
         function cargarEdicion(nombre, precio) {
@@ -612,11 +617,11 @@ HTML_TEMPLATE = """
                             <td><b>${i.cantidad}</b></td>
                             <td>${i.item}</td>
                             <td>$${(i.precio * i.cantidad).toLocaleString()}</td>
-                            <td><input type="checkbox" ${i.entregado ? "checked" : ""} onchange="actualizarEstadoEntrega(${i.id}, this.checked)"></td>
+                            <td><input type="checkbox" ${i.entregado ? "checked" : ""} onchange="actualizarEstadoEntrega(${i.id}, this.checked, '${grupo.mesa}')"></td>
                             <td><small>${i.timestamp}</small></td>
                             <td>
                                 <button class="btn-edit" onclick="prepararEdicionItem('${grupo.mesa}', ${i.id}, '${i.item}', ${i.precio}, ${i.cantidad})">✏️</button>
-                                <button class="btn-delete" onclick="eliminarItemComanda(${i.id})">🗑️</button>
+                                <button class="btn-delete" onclick="eliminarItemComanda(${i.id}, '${grupo.mesa}')">🗑️</button>
                             </td>
                         </tr>
                     `;
@@ -649,6 +654,10 @@ HTML_TEMPLATE = """
             if(!confirm(`¿Cerrar cuenta de la Mesa ${mesa}?`)) return;
             await fetch(`/api/cerrar-cuenta?mesa=${mesa}`, { method: 'DELETE' });
             cargarDatosCamarero();
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'SYNC_UPDATE', table: mesa, message: "Cuenta cobrada y cerrada" }));
+            }
         }
 
         async function registrarMesa() {
@@ -689,14 +698,24 @@ HTML_TEMPLATE = """
         function conectar(clientId) {
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${proto}//${window.location.host}/ws/${clientId}`);
+            
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                
+                // Actualizar vistas según el rol activo
                 if (esCamarero || !mesaId) {
                     cargarDatosCamarero();
-                    agregarAlertaVisual(data);
+                    if (data.message && data.type !== 'SYNC_UPDATE') {
+                        agregarAlertaVisual(data);
+                    }
                 }
-                if (mesaId && data.table === mesaId) actualizarDatosCliente();
+                
+                // Si la actualización corresponde a la mesa actual abierta por el cliente, refrescar su cuenta
+                if (mesaId && data.table === mesaId) {
+                    actualizarDatosCliente();
+                }
             };
+
             ws.onclose = () => setTimeout(() => conectar(clientId), 3000);
         }
 
@@ -710,12 +729,23 @@ HTML_TEMPLATE = """
             lista.prepend(div);
         }
 
-        async function enviarAccion(tipo, desc) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({ type: tipo, sender: `mesa_${mesaId}`, table: mesaId, message: desc, timestamp: new Date().toLocaleTimeString() }));
+        async function enviarAccionWS(tipo, desc) {
+            if (!mesaId) return;
+            
+            // Opcional: Registrar la llamada/acción en el servidor o notificar directamente vía WebSocket
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: tipo,
+                    table: mesaId,
+                    message: desc,
+                    timestamp: new Date().toLocaleTimeString()
+                }));
+                alert("¡Solicitud enviada con éxito a los camareros!");
+            } else {
+                alert("Conexión en tiempo real no disponible temporalmente. Intente de nuevo.");
+            }
         }
 
-        // Ejecutar aplicación al cargar
         iniciarApp();
     </script>
 </body>
@@ -724,25 +754,19 @@ HTML_TEMPLATE = """
 
 class ConnectionManager:
     def __init__(self):
-        self.staff_connections: list[WebSocket] = []
-        self.client_connections: dict[str, WebSocket] = {}
+        self.active_connections: list[WebSocket] = []
 
-    async def connect(self, client_id: str, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        if client_id.startswith("admin") or client_id.startswith("camarero"):
-            if websocket not in self.staff_connections:
-                self.staff_connections.append(websocket)
-        else:
-            self.client_connections[client_id] = websocket
+        if websocket not in self.active_connections:
+            self.active_connections.append(websocket)
 
-    def disconnect(self, websocket: WebSocket, client_id: str):
-        if websocket in self.staff_connections:
-            self.staff_connections.remove(websocket)
-        if client_id in self.client_connections:
-            del self.client_connections[client_id]
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
-    async def broadcast_to_staff(self, message: dict):
-        for connection in self.staff_connections:
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
             try:
                 await connection.send_text(json.dumps(message))
             except Exception:
@@ -789,7 +813,6 @@ async def login(data: dict, response: Response):
 
     if user:
         rol = user[0]
-        # Establecer cookies de sesión simples
         response.set_cookie(key="session_user", value=username, httponly=True)
         response.set_cookie(key="session_rol", value=rol, httponly=True)
         return {"success": True, "rol": rol}
@@ -986,14 +1009,15 @@ async def obtener_mesas(request: Request):
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await manager.connect(client_id, websocket)
+    await manager.connect(websocket)
     try:
         while True:
             text_data = await websocket.receive_text()
             event_data = json.loads(text_data)
-            await manager.broadcast_to_staff(event_data)
+            # Reenviar de inmediato la señal a todas las demás pantallas abiertas
+            await manager.broadcast(event_data)
     except WebSocketDisconnect:
-        manager.disconnect(websocket, client_id)
+        manager.disconnect(websocket)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8001))
