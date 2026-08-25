@@ -470,7 +470,6 @@ HTML_TEMPLATE = """
 
                 cargarDatosCamarero();
 
-                // Notificar en tiempo real vía WebSocket
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({
                         type: 'SYNC_UPDATE',
@@ -699,10 +698,13 @@ HTML_TEMPLATE = """
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${proto}//${window.location.host}/ws/${clientId}`);
             
+            ws.onopen = () => {
+                console.log("WebSocket conectado con éxito");
+            };
+
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
-                // Actualizar vistas según el rol activo
                 if (esCamarero || !mesaId) {
                     cargarDatosCamarero();
                     if (data.message && data.type !== 'SYNC_UPDATE') {
@@ -710,13 +712,19 @@ HTML_TEMPLATE = """
                     }
                 }
                 
-                // Si la actualización corresponde a la mesa actual abierta por el cliente, refrescar su cuenta
                 if (mesaId && data.table === mesaId) {
                     actualizarDatosCliente();
                 }
             };
 
-            ws.onclose = () => setTimeout(() => conectar(clientId), 3000);
+            ws.onerror = (error) => {
+                console.error("Error en WebSocket:", error);
+            };
+
+            ws.onclose = () => {
+                console.log("WebSocket desconectado. Reintentando...");
+                setTimeout(() => conectar(clientId), 3000);
+            };
         }
 
         function agregarAlertaVisual(data) {
@@ -732,7 +740,6 @@ HTML_TEMPLATE = """
         async function enviarAccionWS(tipo, desc) {
             if (!mesaId) return;
             
-            // Opcional: Registrar la llamada/acción en el servidor o notificar directamente vía WebSocket
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: tipo,
@@ -742,7 +749,20 @@ HTML_TEMPLATE = """
                 }));
                 alert("¡Solicitud enviada con éxito a los camareros!");
             } else {
-                alert("Conexión en tiempo real no disponible temporalmente. Intente de nuevo.");
+                conectar("mesa_" + mesaId);
+                setTimeout(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: tipo,
+                            table: mesaId,
+                            message: desc,
+                            timestamp: new Date().toLocaleTimeString()
+                        }));
+                        alert("¡Solicitud enviada con éxito a los camareros!");
+                    } else {
+                        alert("No se pudo establecer conexión en tiempo real con el servidor. Verifica tu red.");
+                    }
+                }, 1000);
             }
         }
 
@@ -1014,7 +1034,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
         while True:
             text_data = await websocket.receive_text()
             event_data = json.loads(text_data)
-            # Reenviar de inmediato la señal a todas las demás pantallas abiertas
             await manager.broadcast(event_data)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
